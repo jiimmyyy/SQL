@@ -1,0 +1,120 @@
+DROP TABLE IF EXISTS combined_data;
+
+CREATE TABLE combined_data AS (
+
+	WITH cheerio_exports AS (
+		
+		SELECT	route_level_deep_dive.country
+				, route_dive.location
+				, route_dive.event_date
+				, LEFT(person_level_deep_dive.person_id, POSITION('@' IN person_level_deep_dive.associate_id)-1) AS user_id
+				, route_dive.wave AS cycle_type
+				, route_dive.wave_seq as wave
+				, route_level_deep_dive.route_id
+				, route_level_deep_dive.route_code
+				, route_spread_raw_data.picklist_id
+				, route_spread_raw_data.cart_id
+				, concat(raw_data.task_id, '.', raw_data.task_id) as picklist_cart_id
+				, route_dive.area_location
+				, route_dive.stage_by_time
+				, route_dive.dispatch_by_time
+				, route_dive.job_assignment_time
+				, route_dive.task_assignment_time
+				, route_dive.vehicle_addition_time
+				, route_dive.first_item_time AS first_item_picked_time
+				, route_dive.last_item_time AS last_item_picked_time
+				, route_dive.prepared_at_time
+				, route_dive.task_completion_time
+				, route_level_deep_dive.route_completion_time
+				, raw_data.cart_addition_time - raw_data.picklist_assignment_time as picklist_assignment_to_first_cart
+				, route_spread_raw_data.pick_start_time - raw_data.cart_addition_time as cart_to_first_item
+				, raw_data.pick_complete_time - raw_data.pick_start_time as first_item_to_last_item
+				, raw_data.cart_stage_time - raw_data.pick_complete_time as last_item_to_cart_staged
+				, raw_data.cart_stage_time - raw_data.cart_addition_time as cart_addition_to_cart_staged
+				, person_level_deep_dive.picklist_completion_time - raw_data.picklist_assignment_time as picklist_assignment_to_picklist_completion
+				, raw_data.pick_complete_time - raw_data.cart_addition_time as cart_addition_to_last_item
+				, raw_data.cart_stage_time - raw_data.pick_start_time as first_item_to_cart_staged
+-- 				, person_level_deep_dive.picklist_cycle_time
+-- 				, route_dive.route_cycle_time
+				, person_level_deep_dive.next_task_assignment_time
+				, route_dive.od_met
+				, associate_dive.items
+				, route_spread_raw_data.number_of_bags
+				, route_spread_raw_data.number_of_oversize
+				, associate_level_deep_dive.assign_type
+				, associate_level_deep_dive.assign_description
+ 
+
+		FROM route_spread_raw_data
+			JOIN task_level_deep_dive ON raw_data.picklist_id = task_level_deep_dive.picklist_id
+			JOIN person_level_deep_dive ON raw_data.picklist_id = person_level_deep_dive.picklist_id
+			JOIN route_deep_dive ON raw_data.route_id = route_deep_dive.route_id
+)
+
+SELECT roster.employee_id
+		, roster.user_id AS employee_roster_user_id
+		, CONCAT(RIGHT(employee_roster.employee_name, POSITION(',' IN REVERSE (employee_roster.employee_name))-1) , ' ',
+				 LEFT(employee_roster.employee_name, POSITION(',' IN employee_roster.employee_name)-1)) as employee_name
+		, roster.badge_barcode_id
+		, roster.employment_type
+		, roster.employee_status
+		, CONCAT(RIGHT(employee_roster.manager_name, POSITION(',' IN REVERSE (employee_roster.manager_name))-1) , ' ', 
+				 LEFT(employee_roster.manager_name, POSITION(',' IN employee_roster.manager_name)-1)) as manager_name
+		, CASE WHEN employee_roster.manager_name = 'XXX' OR employee_roster.manager_name = 'XXX' THEN 'NS' ELSE 'AM/Other' END as shift
+		, roster.temp_agency_code
+		, cheerio_exports.*
+		
+		, CASE WHEN number_of_ov = 0 THEN (CASE WHEN (picklist_assignment_to_picklist_completion = '00:00:00' OR number_of_bags <= 1) 
+			THEN null ELSE CAST((number_of_bags / EXTRACT(EPOCH FROM picklist_assignment_to_picklist_completion)) * 60 AS FLOAT(1)) END) ELSE null END 
+			AS picklsit_assignment_to_completion_bags_per_minute
+	 	
+		, CASE WHEN number_of_bags = 0 THEN (CASE WHEN (picklist_assignment_to_picklist_completion = '00:00:00' OR number_of_overflow <= 1)
+			THEN null ELSE CAST((number_of_overflow / EXTRACT(EPOCH FROM picklist_assignment_to_picklist_completion)) * 60 AS FLOAT(1)) END) ELSE null END
+			AS picklsit_assignment_to_completion_overflow_per_minute
+ 		
+		, CASE WHEN number_of_ov = 0 THEN (CASE WHEN (first_item_to_last_item = '00:00:00' OR number_of_bags <= 1)
+			THEN null ELSE CAST((number_of_bags / EXTRACT(EPOCH FROM first_item_to_last_item)) * 60 AS FLOAT(1)) END) ELSE null END
+			AS first_to_last_item_bags_per_minute
+ 		
+		, CASE WHEN number_of_bags = 0 THEN (CASE WHEN (first_item_to_last_item = '00:00:00' OR number_of_overflow <= 1)
+			THEN null ELSE CAST((number_of_overflow / EXTRACT(EPOCH FROM first_item_to_last_item)) * 60 AS FLOAT(1)) END) ELSE null END
+			AS first_to_last_item_overflow_per_minute
+		
+		, CASE WHEN number_of_ov = 0 THEN (CASE WHEN (cart_addition_to_last_item = '00:00:00' OR number_of_bags <= 1)
+			THEN null ELSE CAST((number_of_bags / EXTRACT(EPOCH FROM cart_addition_to_last_item)) * 60 AS FLOAT(1)) END) ELSE null END
+			AS cart_addition_to_last_item_bags_per_minute	
+		
+		, CASE WHEN number_of_bags = 0 THEN (CASE WHEN (cart_addition_to_last_item = '00:00:00' OR number_of_overflow <= 1)
+			THEN null ELSE CAST((number_of_overflow / EXTRACT(EPOCH FROM cart_addition_to_last_item)) * 60 AS FLOAT(1)) END) ELSE null END
+			AS cart_addition_to_last_item_overflow_per_minute
+		
+		, CASE WHEN number_of_ov = 0 THEN (CASE WHEN (first_item_to_cart_staged = '00:00:00' OR number_of_bags <= 1)
+			THEN null ELSE CAST((number_of_bags / EXTRACT(EPOCH FROM first_item_to_cart_staged)) * 60 AS FLOAT(1)) END)
+			ELSE null END AS first_item_to_cart_staged_bags_per_minute	
+		
+		, CASE WHEN number_of_bags = 0 THEN (CASE WHEN (first_item_to_cart_staged = '00:00:00' OR number_of_overflow <= 1)
+			THEN null ELSE CAST((number_of_overflow / EXTRACT(EPOCH FROM first_item_to_cart_staged)) * 60 AS FLOAT(1)) END) ELSE null END
+			AS first_item_to_cart_staged_overflow_per_minute
+
+FROM
+cheerio_exports
+JOIN employee_roster on cheerio_exports.user_id = employee_roster.user_id
+WHERE picklist_id != '' AND
+(manager_name = 'XXX' OR
+manager_name = 'XXX' OR
+manager_name = 'XXX' OR
+manager_name = 'XXX')
+WHERE event_date = '2021-12-20'
+);
+
+-- COPY (
+-- SELECT *
+-- FROM combined_data
+-- ) TO 'C:\cheerio_project\test.csv'
+-- WITH (FORMAT CSV, HEADER, DELIMITER ',');
+
+SELECT *
+FROM combined_data
+WHERE person_name = 'XXX' AND first_to_last_item_bags_per_minute IS NOT null
+ORDER BY event_date
+;
